@@ -1,28 +1,69 @@
+import argparse
 import asyncio
 import logging
-import sys
+import os
 
-from automation_server_client import AutomationServer, Workqueue, WorkItemError, Credential, WorkItemStatus
+from automation_server_client import (
+    AutomationServer,
+    Workqueue,
+    WorkItemError,
+    Credential,
+    WorkItemStatus,
+)
+from odk_tools.tracking import Tracker
+from odk_tools.reporting import report
+from process.config import get_excel_mapping, load_excel_mapping
+from process.mssql_client import MSSQLClient
+
+mssql_client: MSSQLClient
+tracker: Tracker
+
+proces_navn = "Selvstændig indtægt CVR"
 
 
 async def populate_queue(workqueue: Workqueue):
-    logger = logging.getLogger(__name__)
+    borgere = get_excel_mapping()
 
-    logger.info("Hello from populate workqueue!")
+    for cpr in borgere["Cpr"]:
+        eksisterende_kødata = workqueue.get_item_by_reference(cpr, WorkItemStatus.NEW)
+
+        if len(eksisterende_kødata) > 0:
+            continue
+
+        workqueue.add_item({"Cpr": cpr}, cpr)
 
 
 async def process_workqueue(workqueue: Workqueue):
     logger = logging.getLogger(__name__)
 
-    logger.info("Hello from process workqueue!")
-
     for item in workqueue:
         with item:
             data = item.data  # Item data deserialized from json as dict
- 
+
             try:
-                # Process the item here
-                pass
+                oplysninger = mssql_client.hent_oplysninger(data["Cpr"])
+
+                if not oplysninger:
+                    report(
+                        report_id="selvstaendig_indtaegt_cvr",
+                        group="Intet CVRnr",
+                        json={
+                            "Cpr": data["Cpr"],
+                            "Resultat": "Intet CVRnr. fundet på borgeren",
+                        },
+                    )
+                else:
+                    report(
+                        report_id="selvstaendig_indtaegt_cvr",
+                        group="Borgere med CVRnr",
+                        json={
+                            "Cpr": data["Cpr"],
+                            "Resultat": f"CVRnr fundet: {oplysninger[0]['CVRnr']}. Antal: {len(oplysninger)}",
+                        },
+                    )
+
+                tracker.track_task(process_name=proces_navn)
+
             except WorkItemError as e:
                 # A WorkItemError represents a soft error that indicates the item should be passed to manual processing or a business logic fault
                 logger.error(f"Error processing item: {data}. Error: {e}")
@@ -30,13 +71,49 @@ async def process_workqueue(workqueue: Workqueue):
 
 
 if __name__ == "__main__":
+    project_root = os.path.dirname(os.path.abspath(__file__))
+
     ats = AutomationServer.from_environment()
     workqueue = ats.workqueue()
 
-    # Initialize external systems for automation here..
+    tracking_credential = Credential.get_credential("Odense SQL Server")
+
+    tracker = Tracker(
+        username=tracking_credential.username, password=tracking_credential.password
+    )
+
+    mssql_client = MSSQLClient(
+        host="RPA.SQL.ODKNET.DK",  # Assuming username contains host
+        user=tracking_credential.username,
+        password=tracking_credential.password,
+        database="RPA_Dataudveksling_DWH",
+    )
+
+    parser = argparse.ArgumentParser(description=proces_navn)
+    parser.add_argument(
+        "--citizens",
+        help="Path to the file containing the list of citizens to process (one CPR per line)",
+        default=os.path.join(project_root, "documents", "Borgere.xlsx"),
+    )
+    parser.add_argument(
+        "--queue",
+        action="store_true",
+        help="Populate the queue with test data and exit",
+    )
+    args = parser.parse_args()
+
+    if not os.path.isabs(args.citizens):
+        args.citizens = os.path.join(project_root, args.citizens)
+
+    # Validate Excel file exists
+    if not os.path.isfile(args.citizens):
+        raise FileNotFoundError(f"Excel file not found: {args.citizens}")
+
+    # Load excel mapping data once on startup
+    load_excel_mapping(args.citizens)
 
     # Queue management
-    if "--queue" in sys.argv:
+    if args.queue:
         workqueue.clear_workqueue(WorkItemStatus.NEW)
         asyncio.run(populate_queue(workqueue))
         exit(0)
