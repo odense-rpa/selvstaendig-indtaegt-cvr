@@ -83,10 +83,10 @@ if __name__ == "__main__":
     )
 
     mssql_client = MSSQLClient(
-        host="RPA.SQL.ODKNET.DK",  # Assuming username contains host
+        host=tracking_credential.data["server"],  # Assuming username contains host
         user=tracking_credential.username,
         password=tracking_credential.password,
-        database="RPA_Dataudveksling_DWH",
+        database=tracking_credential.data["database"],
     )
 
     parser = argparse.ArgumentParser(description=proces_navn)
