@@ -13,10 +13,11 @@ from automation_server_client import (
 from odk_tools.tracking import Tracker
 from odk_tools.reporting import report
 from process.config import get_excel_mapping, load_excel_mapping
-from process.mssql_client import MSSQLClient
+from virk_client import VirkClient
 
-mssql_client: MSSQLClient
+
 tracker: Tracker
+virk_client: VirkClient
 
 proces_navn = "Selvstændig indtægt CVR"
 
@@ -41,7 +42,7 @@ async def process_workqueue(workqueue: Workqueue):
             data = item.data  # Item data deserialized from json as dict
 
             try:
-                oplysninger = mssql_client.hent_oplysninger(data["Cpr"])
+                oplysninger = virk_client.hent_deltager(data["Cpr"])
 
                 if not oplysninger:
                     report(
@@ -53,14 +54,31 @@ async def process_workqueue(workqueue: Workqueue):
                         },
                     )
                 else:
-                    report(
-                        report_id="selvstaendig_indtaegt_cvr",
-                        group="Borgere med CVRnr",
-                        json={
-                            "Cpr": data["Cpr"],
-                            "Resultat": f"CVRnr fundet: {oplysninger[0]['CVRnr']}. Antal: {len(oplysninger)}",
-                        },
+                    oplysninger_data = (
+                        oplysninger[0]
+                        if isinstance(oplysninger, list) and len(oplysninger) > 0
+                        else oplysninger
                     )
+
+                    aktive_virksomheder = [
+                        relation
+                        for relation in oplysninger_data.get("virksomhedSummariskRelation", [])
+                        if relation.get("virksomhed", {}).get("enhedstype") == "VIRKSOMHED"
+                        and any(
+                            livsforloeb.get("periode", {}).get("gyldigTil") is None
+                            for livsforloeb in relation.get("virksomhed", {}).get("livsforloeb", [])
+                        )
+                    ]
+
+                    for aktiv_virksomhed in aktive_virksomheder:
+                        report(
+                            report_id="selvstaendig_indtaegt_cvr",
+                            group="Borgere med CVRnr",
+                            json={
+                                "Cpr": data["Cpr"],
+                                "Resultat": f"CVRnr fundet: {aktiv_virksomhed["virksomhed"]["cvrNummer"]}. Antal: {len(aktive_virksomheder)}",
+                            },
+                        )
 
                 tracker.track_task(process_name=proces_navn)
 
@@ -76,17 +94,18 @@ if __name__ == "__main__":
     ats = AutomationServer.from_environment()
     workqueue = ats.workqueue()
 
+    certifikat_sti = os.getenv("CERTIFIKATER", "/certifikater")
+
+    # TODO: Rename certs for production purposes
+    virk_client = VirkClient(
+        certifikat_sti=os.path.join(certifikat_sti, "client.crt"),
+        certifikat_nøglefil=os.path.join(certifikat_sti, "client.key"),
+    )
+
     tracking_credential = Credential.get_credential("Odense SQL Server")
 
     tracker = Tracker(
         username=tracking_credential.username, password=tracking_credential.password
-    )
-
-    mssql_client = MSSQLClient(
-        host=tracking_credential.data["server"],  # Assuming username contains host
-        user=tracking_credential.username,
-        password=tracking_credential.password,
-        database=tracking_credential.data["database"],
     )
 
     parser = argparse.ArgumentParser(description=proces_navn)
