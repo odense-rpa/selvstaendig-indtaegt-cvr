@@ -95,11 +95,10 @@ if __name__ == "__main__":
     workqueue = ats.workqueue()
 
     certifikat_sti = os.getenv("CERTIFIKATER", "/certifikater")
-
-    # TODO: Rename certs for production purposes
+    
     virk_client = VirkClient(
-        certifikat_sti=os.path.join(certifikat_sti, "client.crt"),
-        certifikat_nøglefil=os.path.join(certifikat_sti, "client.key"),
+        certifikat_sti=os.path.join(certifikat_sti, "virk.crt"),
+        certifikat_nøglefil=os.path.join(certifikat_sti, "virk.key"),
     )
 
     tracking_credential = Credential.get_credential("Odense SQL Server")
